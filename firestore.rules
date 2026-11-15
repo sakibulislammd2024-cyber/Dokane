@@ -1,0 +1,285 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Global default-deny safety net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isStoreOwner(storeId) {
+      return isSignedIn() &&
+        exists(/databases/$(database)/documents/stores/$(storeId)) &&
+        get(/databases/$(database)/documents/stores/$(storeId)).data.ownerId == request.auth.uid;
+    }
+
+    function isStoreMember(storeId) {
+      return isSignedIn() &&
+        exists(/databases/$(database)/documents/stores/$(storeId)) &&
+        (
+          get(/databases/$(database)/documents/stores/$(storeId)).data.ownerId == request.auth.uid ||
+          request.auth.uid in get(/databases/$(database)/documents/stores/$(storeId)).data.memberUids
+        );
+    }
+
+    function isValidUserProfile(data) {
+      return (!('email' in data) || (data.email is string && data.email.size() <= 200)) &&
+             (!('storeId' in data) || (data.storeId is string && data.storeId.size() <= 128)) &&
+             (!('role' in data) || (data.role is string && data.role.size() <= 50)) &&
+             (!('isSimpleMode' in data) || data.isSimpleMode is bool) &&
+             (!('createdAt' in data) || (data.createdAt is timestamp && data.createdAt <= request.time)) &&
+             (!('updatedAt' in data) || (data.updatedAt is timestamp && data.updatedAt <= request.time));
+    }
+
+    function isValidStore(data) {
+      return data.name is string && data.name.size() >= 1 && data.name.size() <= 120 &&
+             (!('phone' in data) || (data.phone is string && data.phone.size() <= 40)) &&
+             (!('address' in data) || (data.address is string && data.address.size() <= 300)) &&
+             data.ownerId is string && data.ownerId.size() >= 1 && data.ownerId.size() <= 128 &&
+             data.memberUids is list && data.memberUids.size() >= 1 && data.memberUids.size() <= 100 &&
+             (!('members' in data) || (data.members is list && data.members.size() <= 100)) &&
+             (!('createdAt' in data) || (data.createdAt is timestamp && data.createdAt <= request.time)) &&
+             (!('updatedAt' in data) || (data.updatedAt is timestamp && data.updatedAt <= request.time));
+    }
+
+    function isValidInvite(data) {
+      return data.code is string && data.code.size() >= 4 && data.code.size() <= 32 &&
+             data.storeId is string && data.storeId.size() >= 1 && data.storeId.size() <= 128 &&
+             data.createdByUid is string && data.createdByUid.size() >= 1 && data.createdByUid.size() <= 128 &&
+             data.status in ['active', 'used', 'cancelled'] &&
+             (!('storeName' in data) || (data.storeName is string && data.storeName.size() <= 120)) &&
+             (!('staffName' in data) || (data.staffName is string && data.staffName.size() <= 120)) &&
+             (!('roleLabel' in data) || (data.roleLabel is string && data.roleLabel.size() <= 60)) &&
+             (!('permissionLevel' in data) || (data.permissionLevel is string && data.permissionLevel.size() <= 40)) &&
+             (!('permissions' in data) || data.permissions is map) &&
+             (!('createdByName' in data) || (data.createdByName is string && data.createdByName.size() <= 120)) &&
+             (!('usedByUid' in data) || (data.usedByUid is string && data.usedByUid.size() <= 128)) &&
+             (!('usedByEmail' in data) || (data.usedByEmail is string && data.usedByEmail.size() <= 200)) &&
+             (!('createdAt' in data) || data.createdAt is int) &&
+             (!('expiresAt' in data) || data.expiresAt is int) &&
+             (!('usedAt' in data) || data.usedAt is int) &&
+             (!('updatedAt' in data) || (data.updatedAt is timestamp && data.updatedAt <= request.time));
+    }
+
+    function isValidMember(data) {
+      return data.userId is string && data.userId.size() >= 1 && data.userId.size() <= 128 &&
+             data.role is string && data.role.size() <= 50 &&
+             data.status is string && data.status in ['Active', 'Pending', 'Removed', 'active', 'pending', 'removed'] &&
+             (!('displayName' in data) || (data.displayName is string && data.displayName.size() <= 120)) &&
+             (!('email' in data) || (data.email is string && data.email.size() <= 200)) &&
+             (!('roleLabel' in data) || (data.roleLabel is string && data.roleLabel.size() <= 60)) &&
+             (!('permissionLevel' in data) || (data.permissionLevel is string && data.permissionLevel.size() <= 40)) &&
+             (!('permissions' in data) || data.permissions is map) &&
+             (!('updatedAt' in data) || (data.updatedAt is timestamp && data.updatedAt <= request.time));
+    }
+
+    function isValidStoreRecord(data, storeId) {
+      return (!('storeId' in data) || data.storeId == storeId) &&
+             (!('createdAt' in data) || (data.createdAt is timestamp && data.createdAt <= request.time)) &&
+             (!('updatedAt' in data) || (data.updatedAt is timestamp && data.updatedAt <= request.time));
+    }
+
+    // Users collection: strict per-user ownership
+    match /users/{userId} {
+      allow get: if isSignedIn() && isValidId(userId) && request.auth.uid == userId;
+      allow list: if false;
+      allow create: if isSignedIn() && isValidId(userId) && request.auth.uid == userId &&
+                       isValidUserProfile(incoming()) &&
+                       incoming().keys().hasOnly(['email', 'storeId', 'role', 'isSimpleMode', 'createdAt', 'updatedAt']);
+      allow update: if isSignedIn() && isValidId(userId) && request.auth.uid == userId &&
+                       isValidUserProfile(incoming()) &&
+                       incoming().diff(existing()).affectedKeys().hasOnly(['email', 'storeId', 'role', 'isSimpleMode', 'createdAt', 'updatedAt']);
+      allow delete: if false;
+    }
+
+    // Invites collection: owner creates/cancels, invitee claims via code
+    match /invites/{inviteCode} {
+      allow get: if isSignedIn() && isValidId(inviteCode);
+      allow list: if isSignedIn() &&
+                     (existing().createdByUid == request.auth.uid || isStoreOwner(existing().storeId));
+      allow create: if isSignedIn() && isValidId(inviteCode) &&
+                       isValidInvite(incoming()) &&
+                       incoming().createdByUid == request.auth.uid &&
+                       incoming().status == 'active' &&
+                       isStoreOwner(incoming().storeId);
+      allow update: if isSignedIn() && isValidId(inviteCode) &&
+                       isValidInvite(incoming()) &&
+                       incoming().storeId == existing().storeId &&
+                       incoming().createdByUid == existing().createdByUid &&
+                       (
+                         (isStoreOwner(existing().storeId) &&
+                          incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt'])) ||
+                         (existing().status == 'active' &&
+                          incoming().status == 'used' &&
+                          incoming().usedByUid == request.auth.uid &&
+                          incoming().diff(existing()).affectedKeys().hasOnly(['status', 'usedByUid', 'usedByEmail', 'usedAt', 'updatedAt']))
+                       );
+      allow delete: if isSignedIn() && isValidId(inviteCode) && isStoreOwner(existing().storeId);
+    }
+
+    // Stores collection and store-scoped subcollections
+    match /stores/{storeId} {
+      allow get: if isSignedIn() && isValidId(storeId) &&
+                    (existing().ownerId == request.auth.uid || request.auth.uid in existing().memberUids);
+      allow list: if isSignedIn() &&
+                     (existing().ownerId == request.auth.uid || request.auth.uid in existing().memberUids);
+      allow create: if isSignedIn() && isValidId(storeId) &&
+                       isValidStore(incoming()) &&
+                       incoming().ownerId == request.auth.uid &&
+                       request.auth.uid in incoming().memberUids;
+      allow update: if isSignedIn() && isValidId(storeId) &&
+                       isValidStore(incoming()) &&
+                       incoming().ownerId == existing().ownerId &&
+                       (
+                         (existing().ownerId == request.auth.uid &&
+                          incoming().diff(existing()).affectedKeys().hasOnly(['name', 'phone', 'address', 'memberUids', 'members', 'updatedAt'])) ||
+                         (incoming().diff(existing()).affectedKeys().hasOnly(['memberUids', 'updatedAt']) &&
+                          incoming().memberUids.hasAll(existing().memberUids) &&
+                          incoming().memberUids.size() == existing().memberUids.size() + 1 &&
+                          request.auth.uid in incoming().memberUids)
+                       );
+      allow delete: if false;
+
+      match /members/{memberId} {
+        allow get: if isValidId(memberId) && (isStoreMember(storeId) || (isSignedIn() && request.auth.uid == memberId));
+        allow list: if isStoreMember(storeId);
+        allow create: if isSignedIn() && isValidId(memberId) &&
+                         isValidMember(incoming()) &&
+                         (
+                           isStoreOwner(storeId) ||
+                           (request.auth.uid == memberId &&
+                            request.auth.uid in getAfter(/databases/$(database)/documents/stores/$(storeId)).data.memberUids)
+                         );
+        allow update: if isStoreOwner(storeId) && isValidId(memberId) && isValidMember(incoming());
+        allow delete: if isStoreOwner(storeId) && isValidId(memberId);
+      }
+
+      match /meta/{docId} {
+        allow get, list: if isStoreMember(storeId);
+        allow create, update: if isStoreMember(storeId) && isValidId(docId) && isValidStoreRecord(incoming(), storeId);
+        allow delete: if false;
+      }
+
+      match /products/{productId} {
+        allow get: if isStoreMember(storeId) && isValidId(productId);
+        allow list: if isStoreMember(storeId);
+        allow create, update: if isStoreMember(storeId) && isValidId(productId) && isValidStoreRecord(incoming(), storeId);
+        allow delete: if isStoreMember(storeId) && isValidId(productId);
+      }
+
+      match /sales/{saleId} {
+        allow get: if isStoreMember(storeId) && isValidId(saleId);
+        allow list: if isStoreMember(storeId);
+        allow create: if isStoreMember(storeId) && isValidId(saleId) && isValidStoreRecord(incoming(), storeId);
+        allow update, delete: if false;
+      }
+
+      match /customers/{customerId} {
+        allow get: if isStoreMember(storeId) && isValidId(customerId);
+        allow list: if isStoreMember(storeId);
+        allow create, update: if isStoreMember(storeId) && isValidId(customerId) && isValidStoreRecord(incoming(), storeId);
+        allow delete: if isStoreMember(storeId) && isValidId(customerId);
+      }
+
+      match /payments/{paymentId} {
+        allow get: if isStoreMember(storeId) && isValidId(paymentId);
+        allow list: if isStoreMember(storeId);
+        allow create: if isStoreMember(storeId) && isValidId(paymentId) && isValidStoreRecord(incoming(), storeId);
+        allow update, delete: if false;
+      }
+
+      match /suppliers/{supplierId} {
+        allow get: if isStoreMember(storeId) && isValidId(supplierId);
+        allow list: if isStoreMember(storeId);
+        allow create, update: if isStoreMember(storeId) && isValidId(supplierId) && isValidStoreRecord(incoming(), storeId);
+        allow delete: if isStoreMember(storeId) && isValidId(supplierId);
+      }
+
+      match /purchases/{purchaseId} {
+        allow get: if isStoreMember(storeId) && isValidId(purchaseId);
+        allow list: if isStoreMember(storeId);
+        allow create: if isStoreMember(storeId) && isValidId(purchaseId) && isValidStoreRecord(incoming(), storeId);
+        allow update, delete: if false;
+      }
+
+      match /purchaseReturns/{returnId} {
+        allow get: if isStoreMember(storeId) && isValidId(returnId);
+        allow list: if isStoreMember(storeId);
+        allow create: if isStoreMember(storeId) && isValidId(returnId) && isValidStoreRecord(incoming(), storeId);
+        allow update, delete: if false;
+      }
+
+      match /supplierPayments/{paymentId} {
+        allow get: if isStoreMember(storeId) && isValidId(paymentId);
+        allow list: if isStoreMember(storeId);
+        allow create: if isStoreMember(storeId) && isValidId(paymentId) && isValidStoreRecord(incoming(), storeId);
+        allow update, delete: if false;
+      }
+
+      match /accounts/{accountId} {
+        allow get: if isStoreMember(storeId) && isValidId(accountId);
+        allow list: if isStoreMember(storeId);
+        allow create, update: if isStoreMember(storeId) && isValidId(accountId) && isValidStoreRecord(incoming(), storeId);
+        allow delete: if false;
+      }
+
+      match /accountAdjustments/{adjustmentId} {
+        allow get: if isStoreMember(storeId) && isValidId(adjustmentId);
+        allow list: if isStoreMember(storeId);
+        allow create: if isStoreMember(storeId) && isValidId(adjustmentId) && isValidStoreRecord(incoming(), storeId);
+        allow update, delete: if false;
+      }
+
+      match /expenses/{expenseId} {
+        allow get: if isStoreMember(storeId) && isValidId(expenseId);
+        allow list: if isStoreMember(storeId);
+        allow create, update: if isStoreMember(storeId) && isValidId(expenseId) && isValidStoreRecord(incoming(), storeId);
+        allow delete: if false;
+      }
+
+      match /otherIncomes/{incomeId} {
+        allow get: if isStoreMember(storeId) && isValidId(incomeId);
+        allow list: if isStoreMember(storeId);
+        allow create, update: if isStoreMember(storeId) && isValidId(incomeId) && isValidStoreRecord(incoming(), storeId);
+        allow delete: if false;
+      }
+
+      match /categories/{categoryId} {
+        allow get: if isStoreMember(storeId) && isValidId(categoryId);
+        allow list: if isStoreMember(storeId);
+        allow create, update: if isStoreMember(storeId) && isValidId(categoryId) && isValidStoreRecord(incoming(), storeId);
+        allow delete: if false;
+      }
+
+      match /notes/{noteId} {
+        allow get: if isStoreMember(storeId) && isValidId(noteId);
+        allow list: if isStoreMember(storeId);
+        allow create, update: if isStoreMember(storeId) && isValidId(noteId) && isValidStoreRecord(incoming(), storeId);
+        allow delete: if isStoreMember(storeId) && isValidId(noteId);
+      }
+
+      match /healthFixLogs/{logId} {
+        allow get: if isStoreMember(storeId) && isValidId(logId);
+        allow list: if isStoreMember(storeId);
+        allow create: if isStoreMember(storeId) && isValidId(logId) && isValidStoreRecord(incoming(), storeId);
+        allow update, delete: if false;
+      }
+    }
+  }
+}
